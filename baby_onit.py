@@ -809,10 +809,13 @@ def _trim_history(history: list[dict], keep_full: int = HISTORY_KEEP_FULL,
                   head_chars: int = HISTORY_DECAY_CHARS) -> list[dict]:
     """Replayed history with older answers cut to their opening; questions stay whole."""
     n = len(history)
-    return [{"task": rec.get("task", ""),
-             "response": (r[:head_chars] + "\n...[earlier answer trimmed]"
-                          if i < n - keep_full and len(r := rec.get("response", "")) > head_chars else r)}
-            for i, rec in enumerate(history)]
+    out = []
+    for i, rec in enumerate(history):
+        r = rec.get("response", "")
+        if i < n - keep_full and len(r) > head_chars:
+            r = r[:head_chars] + "\n...[earlier answer trimmed]"
+        out.append({"task": rec.get("task", ""), "response": r})
+    return out
 
 def build_session_messages(history: list[dict]) -> list[dict]:
     """Replayed history as user/assistant pairs, oldest first."""
