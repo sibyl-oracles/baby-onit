@@ -91,17 +91,18 @@ stream in as they land.
 
 ### Common flags
 
-Pass before or after the subcommand:
+Pass before or after the subcommand. An omitted flag leaves the config value
+untouched (defaults below are the built-in values when the config is silent):
 
-| Flag | Purpose |
-|---|---|
-| `--host` | endpoint host |
-| `--model` | model name |
-| `--data-path` | working directory |
-| `--no-think` | disable thinking (on by default) |
-| `--max-iterations` | cap the agent loop |
-| `--max-context-tokens` | context budget |
-| `--config` | alternate config file |
+| Flag | Purpose | Default |
+|---|---|---|
+| `--host` | endpoint host | `http://localhost:11434` |
+| `--model` | model name | auto-detect from the endpoint |
+| `--data-path` | working directory | `~/baby-sandbox` |
+| `--no-think` | disable thinking | on |
+| `--max-iterations` | cap the agent loop | `-1` (no cap) |
+| `--max-context-tokens` | compaction trigger (tokens) | `262144` |
+| `--config` | alternate config file | `~/.baby-onit/config.yaml` |
 
 ## How it works
 
