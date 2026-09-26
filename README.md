@@ -35,6 +35,8 @@ earlier 412-line raw-mode editor.
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv && source .venv/bin/activate
+git clone https://github.com/sibyl-oracles/baby-onit.git
+cd baby-onit
 uv pip install -e . -U
 ```
 
