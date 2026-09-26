@@ -1,0 +1,14 @@
+# baby-onit configuration. Secrets do NOT live here — run `baby-onit setup`
+# (env var > keychain > ~/.baby-onit/secrets.yaml).
+serving:
+  provider: auto            # auto|ollama|vllm|sglang|openrouter|vercel|openai|claude
+  host: http://localhost:11434
+  model: ""                 # blank = auto-detect via client.models.list()
+  think: true               # route reasoning to a separate field, not into the answer
+  max_tokens: 32768
+  max_chat_iterations: -1   # -1 = no turn cap (onit's default); set a positive number to opt in
+  max_context_tokens: 262144 # compaction trigger threshold
+  temperature: 0.6
+  top_p: 0.95
+data_path: ~/sandbox
+verbose: false
