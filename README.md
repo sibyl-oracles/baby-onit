@@ -33,6 +33,7 @@ earlier 412-line raw-mode editor.
 ### 1. Install
 
 ```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv && source .venv/bin/activate
 uv pip install -e . -U
 ```
