@@ -1006,13 +1006,13 @@ def ui_chat(cfg: dict) -> None:
         if line in ("\\quit", "\\q", "\\bye", "\\b", "exit"):
             break
         if line == "\\help":
-            console.print("\\model list models · \\host show host · \\key set key · \\reset clear session memory · \\quit exit")
+            console.print("\\model show model · \\host show host · \\key set key · \\reset clear session memory · \\quit exit")
             continue
         if line == "\\reset":
             _history_path(cfg).unlink(missing_ok=True); history = []
             console.print("[dim]session memory cleared[/]")
         elif line == "\\model":
-            console.print(f"host {provider.host}: {', '.join(asyncio.run(provider.list_models())) or '(none)'}")
+            console.print(f"model {provider.model or '(none)'} @ {provider.host}")
         elif line == "\\host":
             console.print(provider.host)
         elif line == "\\key":
