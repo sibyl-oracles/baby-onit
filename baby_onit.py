@@ -393,18 +393,30 @@ def build_system_prompt(cfg: dict) -> str:
 # S5. Tool implementations — tools are functions with a JSON-schema business card.
 DATA_PATH: str = ""  # jail root, set by run(); all paths resolve inside it
 
-# Executables refused outright in bash — the same "become someone else / leave
-# the machine" set onit refuses as CRITICAL without asking (onit:
-# command_policy.py NEVER_ASK_COMMANDS). Reaching for one is a different kind
-# of event from reaching for a linter nobody listed.
+# Executables refused outright in bash. Basis (onit: command_policy.py
+# NEVER_ASK_COMMANDS): a command is refused if it can (a) escalate privilege,
+# (b) escape the jail/namespace, or (c) write to the host OS outside the jail.
+# Read-only forms of a binary (e.g. `systemctl status`) are still refused
+# because the gate matches the binary name, not the subcommand; disable with
+# block_dangerous: false if you need the read forms.
+#
+# NOT on this list: ssh, scp, sftp, rsync, telnet, rlogin, ftp. These are
+# remote-access tools — the jail is about the *local* filesystem. An agent
+# that needs remote access should use a dedicated tool (send_file with a
+# callback), not raw ssh. Allowing them here would let the agent read/write
+# arbitrary remote hosts with no gate.
 NEVER_ASK_COMMANDS = frozenset({
+    # (a) privilege escalation — become another user or gain capabilities
+    "sudo", "su", "doas", "pkexec",
+    "setcap", "setpriv", "capsh",
+    # (b) namespace / container escape — leave the jail
+    "chroot", "nsenter", "unshare",
     "docker", "dockerd", "podman", "nerdctl", "ctr", "containerd", "runc",
     "kubectl", "helm", "minikube", "lxc", "lxc-attach", "machinectl",
-    "sudo", "su", "doas", "pkexec", "chroot", "nsenter", "unshare",
-    "setcap", "setpriv", "capsh",
-    "useradd", "usermod", "userdel", "groupadd", "gpasswd", "newgrp",
-    "passwd", "chpasswd", "visudo", "chown", "chgrp",
-    "ssh", "scp", "sftp", "rsync", "telnet", "rlogin", "ftp",
+    # (c) host OS writes outside the jail — user/group/credential management
+    "useradd", "usermod", "userdel", "groupadd", "gpasswd",
+    "passwd", "chpasswd", "visudo", "chown", "chgrp", "newgrp",
+    # (c) host OS writes — mounts, services, schedulers, power
     "mount", "umount", "systemctl", "service", "at", "crontab",
     "shutdown", "reboot", "halt", "poweroff",
 })
@@ -425,8 +437,11 @@ def _resolve(path: str) -> Path:
 
 def _gate_bash(command: str) -> str | None:
     """Refuse dangerous bash before it runs; None = allow. Distilled from onit's
-    _gate_command (mcp_server.py): refuses the NEVER_ASK set (privilege/escape/
-    remote) and the curl|sh pipe. Disabled by block_dangerous: false."""
+    _gate_command (mcp_server.py): refuses the NEVER_ASK set (privilege
+    escalation, namespace escape, or host-OS writes outside the jail) and the
+    curl|sh pipe. Matches the binary name, not the subcommand, so read-only
+    forms (e.g. `systemctl status`) are also refused. Disabled by
+    block_dangerous: false."""
     if not load_config().get("block_dangerous", True):
         return None
     for exe in NEVER_ASK_COMMANDS:
