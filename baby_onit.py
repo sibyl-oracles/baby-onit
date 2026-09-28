@@ -932,7 +932,8 @@ async def _doctor_probe(provider: Provider, cfg: dict) -> dict:
     t0 = time.monotonic()
     try:
         if not provider.model:
-            provider.model = await asyncio.wait_for(provider.autodetect_model(), DOCTOR_TIMEOUT)
+            await asyncio.wait_for(provider.list_models(), DOCTOR_TIMEOUT)  # cache under the timeout; no SystemExit in wait_for's task
+            provider.model = await provider.autodetect_model()
         res["model"] = provider.model
         # Same system prompt as a real run (S4): it carries today's date, so
         # the date question is answerable without tools or a live clock.
