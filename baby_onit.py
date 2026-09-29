@@ -308,7 +308,15 @@ class Provider:
         body["max_completion_tokens" if "api.openai.com" in self.host else "max_tokens"] = s["max_tokens"]
         if s["think"] and self.host_has_thinking():
             body["extra_body"] = {"chat_template_kwargs": {"enable_thinking": True}}
-        chunks = [c async for c in await self.client.chat.completions.create(**body)]
+        try:
+            chunks = [c async for c in await self.client.chat.completions.create(**body)]
+        except Exception as e:  # some providers (e.g. OpenRouter) return an empty body
+            if "empty response" in str(e).lower():
+                raise RuntimeError(
+                    f"provider returned an empty response (model={self.model}, "
+                    f"host={self.host}) — usually a provider-side hiccup or the model "
+                    f"refused; retry, or set serving.model to another model") from e
+            raise
         usage = next(({"prompt_tokens": c.usage.prompt_tokens, "completion_tokens": c.usage.completion_tokens}
                       for c in chunks if c.usage), {})
         deltas = [c.choices[0].delta for c in chunks if c.choices]
