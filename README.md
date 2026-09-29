@@ -1,6 +1,6 @@
 # baby-onit
 
-A tiny, **~1000-line single-file agent harness** distilled from [onit](https://github.com/sibyl-oracles/onit) for teaching how an agent harness actually works. Suitable for tiny devices too!
+A tiny, **~1200-line single-file agent harness** distilled from [onit](https://github.com/sibyl-oracles/onit) for teaching how an agent harness actually works. Suitable for tiny devices too!
 
 ```
 model <--> agent loop <--> tools
@@ -18,10 +18,10 @@ from, so you can go from the toy to the real thing.
 
 | Metric | Lines |
 |---|---|
-| Total (`baby_onit.py`) | 994 |
-| Code (non-blank, non-comment) | 933 |
+| Total (`baby_onit.py`) | 1177 |
+| Code (non-blank, non-comment) | 1046 |
 | Comments | 42 |
-| Blank | 19 |
+| Blank | 90 |
 
 *Recompute with:* `wc -l baby_onit.py` and
 `grep -vE '^\s*(#|$)' baby_onit.py | wc -l`. Input uses stdlib `readline`
