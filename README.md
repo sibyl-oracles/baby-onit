@@ -105,7 +105,14 @@ untouched (defaults below are the built-in values when the config is silent):
 | `--no-think` | disable thinking | on |
 | `--max-iterations` | cap the agent loop | `-1` (no cap) |
 | `--max-context-tokens` | compaction trigger (tokens) | `262144` |
+| `--history-budget-tokens` | cap on replayed session history (tokens) | `16000` |
 | `--config` | alternate config file | `~/.baby-onit/config.yaml` |
+
+Long sessions are replayed into every request. Some providers (notably
+OpenRouter stealth models) fail *gracelessly* — an empty body instead of a
+400 — once the payload gets large, so the replayed history is trimmed to
+`history_budget_tokens` before the first call, and the request is retried
+up to 3× with backoff if the provider still returns an empty response.
 
 ## How it works
 

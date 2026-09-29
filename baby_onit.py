@@ -37,6 +37,7 @@ DEFAULTS = {
         "max_tokens": 32768,
         "max_chat_iterations": -1,  # -1 = no turn cap (onit's default)
         "max_context_tokens": 262144,  # compaction trigger threshold
+        "history_budget_tokens": 16000,  # hard cap on replayed history (pre-call trim)
         "temperature": 0.6,
         "top_p": 0.95,
     },
@@ -308,15 +309,25 @@ class Provider:
         body["max_completion_tokens" if "api.openai.com" in self.host else "max_tokens"] = s["max_tokens"]
         if s["think"] and self.host_has_thinking():
             body["extra_body"] = {"chat_template_kwargs": {"enable_thinking": True}}
-        try:
-            chunks = [c async for c in await self.client.chat.completions.create(**body)]
-        except Exception as e:  # some providers (e.g. OpenRouter) return an empty body
-            if "empty response" in str(e).lower():
-                raise RuntimeError(
-                    f"provider returned an empty response (model={self.model}, "
-                    f"host={self.host}) — usually a provider-side hiccup or the model "
-                    f"refused; retry, or set serving.model to another model") from e
-            raise
+        # Some providers (e.g. OpenRouter stealth models) return an empty body
+        # *intermittently* on large payloads — a flake, not a refusal. Retry a
+        # few times with backoff before surfacing the error.
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                chunks = [c async for c in await self.client.chat.completions.create(**body)]
+                break
+            except Exception as e:
+                if "empty response" not in str(e).lower():
+                    raise
+                last_exc = e
+                if attempt < 2:
+                    await asyncio.sleep(1.5 * (attempt + 1))
+        else:
+            raise RuntimeError(
+                f"provider returned an empty response 3x in a row (model={self.model}, "
+                f"host={self.host}) — usually a provider-side flake on a large payload; "
+                f"lower serving.history_budget_tokens or set serving.model to another model") from last_exc
         usage = next(({"prompt_tokens": c.usage.prompt_tokens, "completion_tokens": c.usage.completion_tokens}
                       for c in chunks if c.usage), {})
         deltas = [c.choices[0].delta for c in chunks if c.choices]
@@ -732,7 +743,8 @@ async def agent_loop(task: str, cfg: dict, provider: Provider,
     max_iter = max_iter if max_iter is not None else cfg["serving"]["max_chat_iterations"]
     limit = cfg["serving"]["max_context_tokens"]
     messages: list[dict] = [{"role": "system", "content": build_system_prompt(cfg)}]
-    messages += build_session_messages(session_history or [])
+    messages += build_session_messages(session_history or [],
+                                       budget_tokens=cfg["serving"]["history_budget_tokens"])
     messages.append({"role": "user", "content": task})
     _call_history.clear()
     iteration, answer = 1, ""
@@ -806,6 +818,10 @@ HISTORY_FILE = "session_history.jsonl"
 HISTORY_KEEP_FULL = 3     # most recent answers kept verbatim
 HISTORY_DECAY_CHARS = 800  # older answers cut to this many chars
 
+def _est_tokens(text: str) -> int:
+    """Cheap token estimate (~4 chars/token). Good enough to size a history budget."""
+    return max(1, (len(text) + 3) // 4)
+
 def _history_path(cfg: dict) -> Path:
     """Path to the session's JSONL history file."""
     return Path(cfg["data_path"]) / HISTORY_FILE
@@ -840,11 +856,23 @@ def _trim_history(history: list[dict], keep_full: int = HISTORY_KEEP_FULL,
         out.append({"task": rec.get("task", ""), "response": r})
     return out
 
-def build_session_messages(history: list[dict]) -> list[dict]:
-    """Replayed history as user/assistant pairs, oldest first."""
-    return [m for rec in _trim_history(history)
+def build_session_messages(history: list[dict], budget_tokens: int | None = None) -> list[dict]:
+    """Replayed history as user/assistant pairs, oldest first.
+
+    When budget_tokens is set, the oldest messages are dropped until the replay
+    fits the budget. Some providers (e.g. OpenRouter stealth models) fail
+    *gracelessly* — an empty body instead of a 400 — on large payloads, so a
+    hard cap here keeps the first call under the provider's real ceiling.
+    """
+    msgs = [m for rec in _trim_history(history)
             for m in ([{"role": "user", "content": rec["task"]}]
                       + ([{"role": "assistant", "content": rec["response"]}] if rec["response"] else []))]
+    if budget_tokens and budget_tokens > 0:
+        total = sum(_est_tokens(m.get("content", "") or "") for m in msgs)
+        while total > budget_tokens and len(msgs) > 2:
+            total -= _est_tokens(msgs[0].get("content", "") or "")
+            msgs.pop(0)
+    return msgs
 
 # S8. Text UI — renders loop events for the human; one-way display, never talks to the model.
 def ui_banner(cfg: dict) -> None:
@@ -1177,7 +1205,9 @@ def main(argv: list[str] | None = None) -> None:
                      ("--max-iterations", {"type": int,
                                            "help": "cap on agent-loop turns (default: -1 = no cap)"}),
                      ("--max-context-tokens", {"type": int, "help": "compaction trigger in tokens "
-                                               "(default: 262144; e.g. 1000000 for a 1M-context model)"})]:
+                                               "(default: 262144; e.g. 1000000 for a 1M-context model)"}),
+                     ("--history-budget-tokens", {"type": int, "help": "cap on replayed session history "
+                                               "in tokens (default: 16000; lower it if a provider flakes on large payloads)"})]:
         ap.add_argument(flag, **kw)
     sub = ap.add_subparsers(dest="cmd")
     p_setup = sub.add_parser("setup", help="configure endpoint + secrets")
@@ -1196,7 +1226,8 @@ def main(argv: list[str] | None = None) -> None:
     cfg = load_config(args.config)
     for k, v in (("host", args.host), ("model", args.model), ("think", False if args.no_think else None),
                  ("max_chat_iterations", args.max_iterations),
-                 ("max_context_tokens", getattr(args, "max_context_tokens", None))):
+                 ("max_context_tokens", getattr(args, "max_context_tokens", None)),
+                 ("history_budget_tokens", getattr(args, "history_budget_tokens", None))):
         if v is not None:
             cfg["serving"][k] = v
     if args.data_path:
