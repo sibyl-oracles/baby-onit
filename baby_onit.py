@@ -398,6 +398,29 @@ def build_system_prompt(cfg: dict) -> str:
 # S5. Tool implementations — tools are functions with a JSON-schema business card.
 DATA_PATH: str = ""  # jail root, set by run(); all paths resolve inside it
 
+# Hard ceiling on any single tool result, in characters. A tool result is
+# appended to `messages` verbatim, so one unbounded result (a 3 MB base64 line
+# matched by grep, a runaway build log) can blow past the provider's context
+# window in a single iteration — before compaction ever gets a chance to run.
+# Every tool result passes through _cap_result() on the way into the transcript.
+TOOL_RESULT_MAX_CHARS = 40_000
+GREP_LINE_MAX_CHARS = 300     # a single matched line longer than this is elided
+GREP_MAX_MATCHES = 50         # stop after this many matching lines
+GREP_MAX_CHARS = 20_000       # ...or this many bytes of matches, whichever first
+
+def _cap_result(text: str, limit: int = TOOL_RESULT_MAX_CHARS) -> str:
+    """Clamp one tool result to `limit` chars, keeping head and tail.
+
+    Head and tail both matter: the head carries the first matches, the tail
+    carries the exit status. The middle is what we drop.
+    """
+    if len(text) <= limit:
+        return text
+    head, tail = limit * 3 // 4, limit // 4 - 80
+    return (f"{text[:head]}\n\n...[tool result truncated: {len(text):,} chars total, "
+            f"showing first {head:,} and last {tail:,} — narrow the query "
+            f"(pattern, path, file_pattern) or read a specific file]...\n\n{text[-tail:]}")
+
 # Executables refused outright in bash (onit: command_policy.py NEVER_ASK_COMMANDS).
 # A command is refused if it can (a) escalate privilege, (b) escape the jail/
 # namespace, or (c) write to the host OS outside the jail. The gate matches the
@@ -498,7 +521,7 @@ def tool_bash(command: str, timeout: int = 300) -> str:
         env.setdefault("HF_TOKEN", token)
     try:
         proc = subprocess.run(command, shell=True, cwd=DATA_PATH or os.getcwd(), env=env, capture_output=True, text=True, timeout=timeout)
-        return (proc.stdout or "") + (("\n[stderr] " + proc.stderr) if proc.stderr else "") or "(no output)"
+        return _cap_result((proc.stdout or "") + (("\n[stderr] " + proc.stderr) if proc.stderr else "") or "(no output)")
     except subprocess.TimeoutExpired:
         return f"(timed out after {timeout}s)"
 
@@ -599,15 +622,26 @@ def tool_search_document(path: str, query: str = "", pattern: str = "", context_
     return "\n---\n".join(rec[i] for s, i in _bm25(rec, query)[:3] if s > 0) or "(no relevant section)"
 
 def tool_grep(pattern: str, path: str = ".", file_pattern: str = "*") -> str:
-    """Recursive regex search across DATA_PATH (like onit's grep tool)."""
-    rx, out = re.compile(pattern), []
+    """Recursive regex search across DATA_PATH (like onit's grep tool).
+
+    Bounded on three axes — matches, total bytes, and per-line length — because
+    a match count alone says nothing about size: a single minified-JSON or
+    base64 line can be megabytes, and 50 of those is a context-window overflow.
+    """
+    rx, out, total = re.compile(pattern), [], 0
     for p in sorted(_resolve(path).rglob(file_pattern)):
         try:
             for i, line in enumerate(p.read_text(errors="replace").splitlines()):
-                if rx.search(line):
-                    out.append(f"{p.relative_to(DATA_PATH)}:{i+1}: {line.strip()}")
-                    if len(out) >= 50:
-                        return "\n".join(out)  # cap the result
+                if not rx.search(line):
+                    continue
+                line = line.strip()
+                if len(line) > GREP_LINE_MAX_CHARS:  # minified JSON, base64 blobs
+                    line = line[:GREP_LINE_MAX_CHARS] + f"...[{len(line):,} chars on this line]"
+                hit = f"{p.relative_to(DATA_PATH)}:{i+1}: {line}"
+                out.append(hit)
+                total += len(hit) + 1
+                if len(out) >= GREP_MAX_MATCHES or total >= GREP_MAX_CHARS:
+                    return "\n".join(out) + "\n...[grep stopped: match/byte cap reached — narrow the pattern or path]"
         except Exception:
             pass  # unreadable file or directory: skip
     return "\n".join(out) or "(no matches)"
@@ -711,6 +745,21 @@ async def agent_loop(task: str, cfg: dict, provider: Provider, on_event: Callabl
         if max_iter > 0 and iteration > max_iter:
             say("turn", f"iteration cap reached ({max_iter})")
             break
+        # Compact *before* sending, not after. prompt_tokens from the previous
+        # call cannot see the tool results appended since, so a check placed
+        # after the append is always one iteration stale — it lets a single
+        # oversized result through to a 400. The estimate below is current.
+        if _messages_tokens(messages) > 0.85 * limit and (max_iter <= 0 or iteration < max_iter):
+            say("status", "compacting context\u2026")
+            ct0 = time.monotonic()
+            summary, _ = await provider.chat([{"role": "system", "content": "Summarize the conversation so far: "
+                 "task, findings, files touched, what remains."},
+                {"role": "user", "content": "\n".join(
+                    f"{m['role']}: {m.get('content') or ''}" + (f" {json.dumps(m['tool_calls'])}" if m.get("tool_calls") else "")
+                    for m in messages[1:])[:20_000]}])
+            say("status", f"compacted in {time.monotonic() - ct0:.1f}s")
+            messages = [messages[0], {"role": "user", "content": f"[compacted]\n{summary['content']}\n\nContinue the task."}]
+        messages = _fit_messages(messages, limit)
         t0, first_t = time.monotonic(), []
         msg, usage = await provider.chat(messages, [schema for schema, _ in TOOLS.values()],
             stream_cb=lambda _d: first_t.append(time.monotonic()) if not first_t else None)
@@ -733,7 +782,7 @@ async def agent_loop(task: str, cfg: dict, provider: Provider, on_event: Callabl
         messages.append({"role": "assistant", "content": msg["content"], "tool_calls": raw_calls})
         async def run_one(c):
             say("tool", f"{c['name']}({json.dumps(c['arguments'])[:120]})")
-            result = await dispatch(c["name"], c["arguments"])
+            result = _cap_result(await dispatch(c["name"], c["arguments"]))
             say("result", result[:200].replace("\n", " "))
             return c, result
         results = list(await asyncio.gather(*(run_one(c) for c in calls if c["name"] in READ_ONLY)))
@@ -743,16 +792,6 @@ async def agent_loop(task: str, cfg: dict, provider: Provider, on_event: Callabl
         iteration += 1
         for c, result in results:
             messages.append(_tool_message(c["name"], result, c))
-        if prompt_tokens > 0.85 * limit and (max_iter <= 0 or iteration < max_iter):
-            say("status", "compacting context\u2026")
-            ct0 = time.monotonic()
-            summary, _ = await provider.chat([{"role": "system", "content": "Summarize the conversation so far: "
-                 "task, findings, files touched, what remains."},
-                {"role": "user", "content": "\n".join(
-                    f"{m['role']}: {m.get('content') or ''}" + (f" {json.dumps(m['tool_calls'])}" if m.get("tool_calls") else "")
-                    for m in messages[1:])[:20_000]}])
-            say("status", f"compacted in {time.monotonic() - ct0:.1f}s")
-            messages = [messages[0], {"role": "user", "content": f"[compacted]\n{summary['content']}\n\nContinue the task."}]
     if answer:
         return answer
     # Two exit paths: a real cap (max_iter > 0) vs. the model ending the turn
@@ -772,6 +811,44 @@ HISTORY_DECAY_CHARS = 800  # older answers cut to this many chars
 def _est_tokens(text: str) -> int:
     """Cheap token estimate (~4 chars/token). Good enough to size a history budget."""
     return max(1, (len(text) + 3) // 4)
+
+def _messages_tokens(messages: list[dict]) -> int:
+    """Estimated prompt size of a whole message list, tool calls included.
+
+    This is a look-ahead: the provider's reported prompt_tokens describes the
+    request we *already* sent, so it cannot see the tool results we are about
+    to append. This can.
+    """
+    return sum(_est_tokens((m.get("content") or "") + (json.dumps(m["tool_calls"]) if m.get("tool_calls") else ""))
+               for m in messages)
+
+def _fit_messages(messages: list[dict], limit: int) -> list[dict]:
+    """Last-resort shrink: drop the largest self-contained exchanges until the
+    estimated prompt fits `limit`. Compaction should make this a no-op; it
+    exists so a pathological payload degrades instead of 400-ing.
+
+    An exchange is an assistant message plus the tool results answering it.
+    Dropping whole exchanges keeps the sequence valid \u2014 a `tool` message whose
+    parent `tool_calls` message is gone is rejected by the API. The system
+    prompt, the task, and the final message are never dropped."""
+    def size(ms: list[dict]) -> int:
+        return sum(_est_tokens((m.get("content") or "") + (json.dumps(m["tool_calls"]) if m.get("tool_calls") else "")) for m in ms)
+    out = list(messages)
+    while size(out) > limit and len(out) > 2:
+        units, i = [], 1
+        while i < len(out) - 1:  # never the final message
+            j = i + 1
+            if out[i].get("tool_calls"):
+                while j < len(out) and out[j].get("role") == "tool":
+                    j += 1
+            units.append((size(out[i:j]), i, j))
+            i = j
+        candidates = [u for u in units if not (u[1] == 1 and out[1].get("role") == "user")]
+        if not candidates:
+            break  # only the task is left; nothing safe to drop
+        _, lo, hi = max(candidates, key=lambda u: u[0])
+        del out[lo:hi]
+    return out
 
 def _history_path(cfg: dict) -> Path:
     """Path to the session's JSONL history file."""

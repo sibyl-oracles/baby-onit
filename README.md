@@ -114,6 +114,14 @@ OpenRouter stealth models) fail *gracelessly* — an empty body instead of a
 `history_budget_tokens` before the first call, and the request is retried
 up to 3× with backoff if the provider still returns an empty response.
 
+A single tool result can also blow the context window on its own: a `grep`
+match inside a minified-JSON or base64 file can be megabytes on one line.
+Every tool result is therefore clamped to 40 000 characters before it enters
+the transcript, and `grep` stops at 50 matches / 20 000 bytes / 300 chars per
+line. Context compaction is checked at the top of each loop iteration against
+a fresh estimate, so an oversized result is summarised *before* the request
+that would carry it is sent.
+
 ## How it works
 
 The full architecture — the section-by-section map of `baby_onit.py`, the

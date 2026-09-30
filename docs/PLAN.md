@@ -113,7 +113,7 @@ Kept from onit, each with a comment explaining *why*:
 - **Read-only batching** — searches/reads run concurrently, writes sequential — `chat.py:_handle_structured_tool_calls`
 - **Repeat guard** — same call back-to-back ≥ 3 → steer notice; ≥ 5 → bail — `chat.py` repeated-call counters
 - **Iteration cap** — `serving.max_chat_iterations` (default `-1` = no cap, matching onit; stuck runs are bounded by the repeat guard + context compaction instead)
-- **Context compaction** — when `prompt_tokens > 0.85 × max_context_tokens`, summarize history with one LLM call, keep system message, end on user turn, prepend the compaction notice — `chat.py:_compact_context`
+- **Context compaction** — when the estimated prompt exceeds `0.85 × max_context_tokens`, summarize history with one LLM call, keep system message, end on user turn, prepend the compaction notice. The check runs at the *top* of the loop on a fresh estimate, not after the tool results are appended — the provider's reported `prompt_tokens` describes the request already sent, so it cannot see what was just appended. A hard `_fit_messages` truncation backstops it.
 - **Token accounting** — prompt/completion totals, tok/s, turns, tool calls (TurnMetrics, distilled)
 
 ### 3.4 Keychain (S2)

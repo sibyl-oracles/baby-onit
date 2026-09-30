@@ -185,7 +185,7 @@ The harness ships eight:
 | `edit_file` | exact string replace in a file | jail path check |
 | `local_search` | BM25 search over local docs | — |
 | `search_document` | search within one document | jail path check |
-| `grep` | regex search across files | jail path check |
+| `grep` | regex search across files | jail path check; match/byte/line caps |
 
 Three design details are worth studying.
 
@@ -267,8 +267,15 @@ while True:
 The loop also enforces two limits:
 
 - **Iteration cap** — `max_chat_iterations`; `-1` means unlimited, matching `onit`.
-- **Context compaction** — when the running token count approaches
+- **Context compaction** — when the estimated prompt size approaches
   `max_context_tokens`, older turns are summarised so the conversation fits.
+  The check runs before each request, on a fresh estimate, because the
+  provider's reported token count cannot see the tool results just appended.
+- **Tool-result cap** — every tool result is clamped to `TOOL_RESULT_MAX_CHARS`
+  (40 000) on its way into the transcript. `grep` is additionally bounded by
+  match count, total bytes, and per-line length: a match count alone says
+  nothing about size, and a single minified-JSON or base64 line can be
+  megabytes.
 
 The loop returns the final assistant text. It takes an `on_event(kind, text)`
 callback so the UI can render each step live, but the loop itself knows nothing
