@@ -564,53 +564,12 @@ def _cap_result(text: str, limit: int = TOOL_RESULT_MAX_CHARS) -> str:
 # privilege escalation, namespace escape, host-OS writes. Matches the binary name,
 # so read-only forms (`systemctl status`) are refused too; ssh/scp/rsync are NOT
 # listed — the jail is about the local filesystem. block_dangerous: false disables.
+# one string reads as a list; SIM905 would explode it to 43 noisy lines
 NEVER_ASK_COMMANDS = frozenset(
-    [
-        "sudo",
-        "su",
-        "doas",
-        "pkexec",
-        "setcap",
-        "setpriv",
-        "capsh",
-        "chroot",
-        "nsenter",
-        "unshare",
-        "docker",
-        "dockerd",
-        "podman",
-        "nerdctl",
-        "ctr",
-        "containerd",
-        "runc",
-        "kubectl",
-        "helm",
-        "minikube",
-        "lxc",
-        "lxc-attach",
-        "machinectl",
-        "useradd",
-        "usermod",
-        "userdel",
-        "groupadd",
-        "gpasswd",
-        "passwd",
-        "chpasswd",
-        "visudo",
-        "chown",
-        "chgrp",
-        "newgrp",
-        "mount",
-        "umount",
-        "systemctl",
-        "service",
-        "at",
-        "crontab",
-        "shutdown",
-        "reboot",
-        "halt",
-        "poweroff",
-    ]
+    "sudo su doas pkexec setcap setpriv capsh chroot nsenter unshare docker dockerd podman "  # noqa: SIM905
+    "nerdctl ctr containerd runc kubectl helm minikube lxc lxc-attach machinectl useradd "
+    "usermod userdel groupadd gpasswd passwd chpasswd visudo chown chgrp newgrp mount "
+    "umount systemctl service at crontab shutdown reboot halt poweroff".split()
 )
 
 
@@ -772,34 +731,11 @@ def tool_edit_file(path: str, old_string: str, new_string: str, replace_all: boo
 
 # --- local_search: the only nontrivial tool left in -------------------------
 # CONCEPT: retrieval = chunk -> index -> rank -> fuse. onit's local_search
-_STOP = {
-    "a",
-    "an",
-    "and",
-    "are",
-    "as",
-    "at",
-    "be",
-    "by",
-    "for",
-    "from",
-    "has",
-    "have",
-    "in",
-    "is",
-    "it",
-    "its",
-    "of",
-    "on",
-    "or",
-    "that",
-    "the",
-    "to",
-    "was",
-    "were",
-    "will",
-    "with",
-}
+# stop-words for BM25; one string reads as a list (SIM905 would explode it)
+_STOP = frozenset(
+    "a an and are as at be by for from has have in is it its of on or "  # noqa: SIM905
+    "that the to was were will with".split()
+)
 
 
 def _tokens(text: str) -> list[str]:
@@ -1066,7 +1002,7 @@ async def agent_loop(
                     {
                         "role": "system",
                         "content": (
-                            "Summarize the conversation so far: " "task, findings, files touched, what remains."
+                            "Summarize the conversation so far: task, findings, files touched, what remains."
                         ),
                     },
                     {
