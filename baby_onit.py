@@ -1194,8 +1194,8 @@ def ui_banner(cfg: dict) -> None:
     Console().print(
         Panel(
             f"[bold]baby-onit[/] — tiny agent harness distilled from onit\n"
-            f"host   {s['host']}[/]\nmodel  {s['model'] or '(auto)'}[/]\n"
-            f"dir    {cfg['data_path']}[/]\n"
+            f"host   [cyan]{s['host']}[/]\nmodel  [cyan]{s['model'] or '(auto)'}[/]\n"
+            f"dir    [cyan]{cfg['data_path']}[/]\n"
             f"tools  [cyan]{len(TOOLS)}[/] · \\quit to exit · \\help for commands",
             box=box.ROUNDED,
             border_style="blue",
