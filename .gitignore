@@ -7,3 +7,4 @@ dist/
 .onit
 tmp
 local_search/
+*.log

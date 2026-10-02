@@ -18,10 +18,10 @@ from, so you can go from the toy to the real thing.
 
 | Metric | Lines |
 |---|---|
-| Total (`baby_onit.py`) | 1699 |
+| Total (`baby_onit.py`) | 1698 |
 | Code (non-blank, non-comment) | 1457 |
 | Comments | 38 |
-| Blank | 204 |
+| Blank | 203 |
 
 *Recompute with:* `wc -l baby_onit.py` and
 `grep -vE '^\s*(#|$)' baby_onit.py | wc -l`. Input uses stdlib `readline`
