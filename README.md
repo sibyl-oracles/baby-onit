@@ -18,9 +18,9 @@ from, so you can go from the toy to the real thing.
 
 | Metric | Lines |
 |---|---|
-| Total (`baby_onit.py`) | 1762 |
-| Code (non-blank, non-comment) | 1523 |
-| Comments | 35 |
+| Total (`baby_onit.py`) | 1698 |
+| Code (non-blank, non-comment) | 1457 |
+| Comments | 37 |
 | Blank | 204 |
 
 *Recompute with:* `wc -l baby_onit.py` and
