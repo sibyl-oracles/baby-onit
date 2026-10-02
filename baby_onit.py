@@ -1194,7 +1194,8 @@ def ui_banner(cfg: dict) -> None:
     Console().print(
         Panel(
             f"[bold]baby-onit[/] — tiny agent harness distilled from onit\n"
-            f"host   [cyan]{s['host']}[/]\nmodel  [cyan]{s['model'] or '(auto)'}[/]\ndir    [cyan]{cfg['data_path']}[/]\n"
+            f"host   {s['host']}[/]\nmodel  {s['model'] or '(auto)'}[/]\n"
+            f"dir    {cfg['data_path']}[/]\n"
             f"tools  [cyan]{len(TOOLS)}[/] · \\quit to exit · \\help for commands",
             box=box.ROUNDED,
             border_style="blue",
@@ -1425,7 +1426,8 @@ def ui_chat(cfg: dict) -> None:
         if line.startswith("\\"):
             if line == "\\help":
                 console.print(
-                    "\\model show model · \\host show host · \\key set key · \\reset clear session memory · \\quit exit"
+                    "\\model show model · \\host show host · \\key set key · "
+                    "\\reset clear session memory · \\quit exit"
                 )
             elif line == "\\reset":
                 _history_path(cfg).unlink(missing_ok=True)

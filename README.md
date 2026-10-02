@@ -18,8 +18,8 @@ from, so you can go from the toy to the real thing.
 
 | Metric | Lines |
 |---|---|
-| Total (`baby_onit.py`) | 1698 |
-| Code (non-blank, non-comment) | 1457 |
+| Total (`baby_onit.py`) | 1700 |
+| Code (non-blank, non-comment) | 1459 |
 | Comments | 37 |
 | Blank | 204 |
 
