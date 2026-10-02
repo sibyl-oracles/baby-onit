@@ -1297,9 +1297,8 @@ async def _doctor_probe(provider: Provider, cfg: dict) -> dict:
     t0 = time.monotonic()
     try:
         if not provider.model:
-            await asyncio.wait_for(
-                provider.list_models(), DOCTOR_TIMEOUT
-            )  # cache under the timeout; no SystemExit in wait_for's task
+            # cache under the timeout; no SystemExit in wait_for's task
+            await asyncio.wait_for(provider.list_models(), DOCTOR_TIMEOUT)
             provider.model = await provider.autodetect_model()
         res["model"] = provider.model
         msg, usage = await asyncio.wait_for(
@@ -1591,7 +1590,7 @@ def cmd_setup(args) -> None:
     for name in SECRET_NAMES:
         prev_tok = get_secret(name)
         tok = getpass.getpass(
-            f"{name} (enter to keep {'••••' + prev_tok[-4:] if prev_tok else 'none'}, " "'d' to delete): "
+            f"{name} (enter to keep {'••••' + prev_tok[-4:] if prev_tok else 'none'}, 'd' to delete): "
         ).strip()
         if tok == "d":
             if prev_tok:
@@ -1621,7 +1620,7 @@ def main(argv: list[str] | None = None) -> None:
             "--max-context-tokens",
             {
                 "type": int,
-                "help": "compaction trigger in tokens " "(default: 262144; e.g. 1000000 for a 1M-context model)",
+                "help": "compaction trigger in tokens (default: 262144; e.g. 1000000 for a 1M-context model)",
             },
         ),
         (
