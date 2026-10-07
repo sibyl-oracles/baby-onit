@@ -15,8 +15,10 @@ import json
 import math
 import os
 import re
+import select
 import subprocess
 import sys
+import threading
 import time
 from collections import Counter
 from collections.abc import Callable
@@ -187,85 +189,6 @@ def normalize_host(host: str, ollama: bool) -> str:
     return h if h.endswith("/v1") else h + "/v1"
 
 
-def _responses_text_of(content) -> str:
-    """Plain text of a message content: string, part list, or None."""
-    if isinstance(content, list):
-        return "\n".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text")
-    return "" if content is None else str(content)
-
-
-def _is_openai_responses_model(model: str) -> bool:
-    """gpt-6 family needs /v1/responses: /v1/chat/completions refuses its tool calls."""
-    return bool(re.match(r"^gpt-6(\b|[.\-])", (model or "").lower()))
-
-
-def _openai_responses_input(messages: list[dict]) -> list[dict]:
-    """Chat messages -> Responses-API input items; reasoning is not replayed."""
-    items: list[dict] = []
-    for msg in messages:
-        role, content = msg.get("role", "user"), msg.get("content")
-        if role == "tool":
-            items.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": msg.get("tool_call_id", ""),
-                    "output": _responses_text_of(content),
-                }
-            )
-        elif role == "assistant" and (tool_calls := msg.get("tool_calls")):
-            if prose := _responses_text_of(content).strip():
-                items.append({"type": "message", "role": "assistant", "content": prose})
-            for tc in tool_calls:
-                fn = tc.get("function", {}) if isinstance(tc, dict) else {}
-                args = fn.get("arguments", "{}")
-                items.append(
-                    {
-                        "type": "function_call",
-                        "name": fn.get("name", ""),
-                        "call_id": tc.get("id", "") if isinstance(tc, dict) else "",
-                        "arguments": args if isinstance(args, str) else json.dumps(args),
-                    }
-                )
-        else:
-            items.append({"type": "message", "role": role, "content": _responses_text_of(content)})
-    return items
-
-
-def _openai_responses_tools(tools: list[dict]) -> list[dict]:
-    """Chat tool records -> Responses-API function tools (top-level name/params)."""
-    return [
-        (
-            {
-                "type": "function",
-                "name": fn.get("name", ""),
-                "strict": False,
-                "description": fn.get("description", ""),
-                "parameters": fn.get("parameters") or {"type": "object", "properties": {}},
-            }
-            if isinstance(t, dict) and isinstance(fn := t.get("function"), dict)
-            else t
-        )
-        for t in tools or []
-    ]
-
-
-def _finish_calls(pending: dict) -> tuple[list, list]:
-    """Accumulated tool-call slots -> (calls, raw_calls); skips nameless slots."""
-    calls, raw = [], []
-    for slot in pending.values():
-        if not slot["name"]:
-            continue  # truncated mid-call: no function name arrived
-        try:
-            args = json_repair(slot["arguments"]) if slot["arguments"] else {}
-        except Exception:  # noqa: BLE001 — truncated mid-args: dispatch reports the parse error
-            args = {}
-        calls.append({"name": slot["name"], "arguments": args})
-        raw.append(
-            {"id": slot["id"], "type": "function", "function": {"name": slot["name"], "arguments": slot["arguments"]}}
-        )
-    return calls, raw
-
-
 class Provider:
     """Thin async wrapper exposing one `chat()` for both client families."""
 
@@ -367,8 +290,6 @@ class Provider:
         """One chat completion. Returns (assistant_message_dict, usage_dict)."""
         s = self.cfg["serving"]
         self._ensure_client()
-        if not self.ollama and _is_openai_responses_model(self.model):
-            return await self._chat_responses(messages, tools, stream_cb)
         if self.ollama:
             kwargs: dict[str, Any] = {
                 "model": self.model,
@@ -441,60 +362,18 @@ class Provider:
             if tc.function:
                 slot["name"] = tc.function.name or slot["name"]
                 slot["arguments"] += tc.function.arguments or ""
-        calls, raw_calls = _finish_calls(pending)
-        return (
-            {
-                "role": "assistant",
-                "content": content,
-                "thinking": "",
-                "tool_calls": calls,
-                "raw_tool_calls": raw_calls,
-            },
-            usage,
-        )
-
-    async def _chat_responses(self, messages, tools, stream_cb) -> tuple[dict, dict]:
-        """One turn over the Responses API (gpt-6 family; onit chat.py)."""
-        s = self.cfg["serving"]
-        kwargs: dict[str, Any] = {
-            "model": self.model,
-            "input": _openai_responses_input(messages),
-            "max_output_tokens": s["max_tokens"],
-            "store": False,
-        }
-        if tools:
-            kwargs["tools"] = _openai_responses_tools(tools)
-        content, usage, pending = "", {}, {}
-
-        def slot(i):
-            return pending.setdefault(i, {"id": "", "name": "", "arguments": ""})
-
-        async with self.client.responses.stream(**kwargs) as stream:
-            async for event in stream:
-                etype = getattr(event, "type", "")
-                if etype == "response.output_text.delta":
-                    content += event.delta
-                    if stream_cb:
-                        stream_cb(event.delta)
-                elif etype == "response.function_call_arguments.delta":
-                    slot(event.output_index)["arguments"] += event.delta or ""
-                elif etype == "response.function_call_arguments.done":
-                    s = slot(event.output_index)
-                    for attr, k in (("arguments", "arguments"), ("name", "name"), ("call_id", "id")):
-                        if v := getattr(event, attr, None):
-                            s[k] = v
-                elif etype == "response.output_item.added":
-                    if getattr(event.item, "type", "") == "function_call":
-                        s = slot(event.output_index)
-                        s["id"] = getattr(event.item, "call_id", "") or s["id"]
-                        s["name"] = getattr(event.item, "name", "") or s["name"]
-                elif etype == "response.completed":
-                    if (u := getattr(event.response, "usage", None)) is not None:
-                        usage = {
-                            "prompt_tokens": int(getattr(u, "input_tokens", 0) or 0),
-                            "completion_tokens": int(getattr(u, "output_tokens", 0) or 0),
-                        }
-        calls, raw_calls = _finish_calls(pending)
+        calls, raw_calls = [], []
+        for slot in pending.values():
+            if not slot["name"]:
+                continue  # truncated mid-call: no function name arrived
+            try:
+                args = json_repair(slot["arguments"]) if slot["arguments"] else {}
+            except Exception:  # noqa: BLE001 — truncated mid-args: dispatch reports the parse error
+                args = {}
+            calls.append({"name": slot["name"], "arguments": args})
+            raw_calls.append(
+                {"id": slot["id"], "type": "function", "function": {"name": slot["name"], "arguments": slot["arguments"]}}
+            )
         return (
             {
                 "role": "assistant",
@@ -600,7 +479,7 @@ def _gate_bash(command: str) -> str | None:
 
 
 def tool_web_search(query: str, max_results: int = 5, type: str = "web") -> str:
-    """Tavily (if key) > Ollama web search API > DuckDuckGo (ddgs)."""
+    """Tavily (if key) > Ollama web search API."""
     max_results = max(1, min(int(max_results), 10))
     if key := get_secret("tavily_api_key"):
         try:
@@ -623,7 +502,7 @@ def tool_web_search(query: str, max_results: int = 5, type: str = "web") -> str:
                     for x in r.json().get("results", [])
                 ]
             )
-        except Exception as e:  # noqa: BLE001 — tavily is best-effort; ddgs fallback follows
+        except Exception as e:  # noqa: BLE001 — tavily failed; ollama web search fallback follows
             return f"(tavily failed: {e})"
     key = get_secret("ollama_api_key") or get_secret(f"endpoint_key:{load_config()['serving']['host']}")
     try:
@@ -632,26 +511,14 @@ def tool_web_search(query: str, max_results: int = 5, type: str = "web") -> str:
         client = ollama.Client(
             host="https://api.ollama.com", headers={"Authorization": f"Bearer {key}"} if key else None
         )
-        if out := [
-            {"title": r.title, "url": r.url, "snippet": r.content}
-            for r in client.web_search(query=query, max_results=max_results).results
-        ]:
-            return json.dumps(out)
-    except Exception as e:  # noqa: BLE001 — ollama web search is best-effort; ddgs fallback follows
-        print(f"(ollama web search failed: {e})")
-    from ddgs import DDGS
-
-    fn = DDGS(timeout=10).news if type == "news" else DDGS(timeout=10).text
-    return json.dumps(
-        [
-            {
-                "title": r.get("title"),
-                "url": r.get("href") or r.get("url"),
-                "snippet": r.get("body") or r.get("excerpt", ""),
-            }
-            for r in fn(query, max_results=max_results)
-        ]
-    )
+        return json.dumps(
+            [
+                {"title": r.title, "url": r.url, "snippet": r.content}
+                for r in client.web_search(query=query, max_results=max_results).results
+            ]
+        )
+    except Exception as e:  # noqa: BLE001 — last tier; report the failure
+        return f"(web search failed: tavily {e!r})"
 
 
 def tool_fetch_content(url: str) -> str:
@@ -974,8 +841,13 @@ async def agent_loop(
     max_iter: int | None = None,
     session_history: list[dict] | None = None,
     verbose: bool = False,
+    stop_event: "threading.Event | None" = None,
 ) -> str:
-    """Run the task to completion; return the final assistant text."""
+    """Run the task to completion; return the final assistant text.
+
+    If stop_event is set (by the UI thread when the user presses Enter),
+    the loop exits cleanly at the next iteration boundary.
+    """
     global DATA_PATH
     DATA_PATH = cfg["data_path"]
     max_iter = max_iter if max_iter is not None else cfg["serving"]["max_chat_iterations"]
@@ -987,6 +859,9 @@ async def agent_loop(
     iteration, answer = 1, ""
     say = on_event or (lambda kind, text: None)
     while True:
+        if stop_event is not None and stop_event.is_set():
+            say("status", "stopped by user (Enter)")
+            break
         if max_iter > 0 and iteration > max_iter:
             say("turn", f"iteration cap reached ({max_iter})")
             break
@@ -1278,6 +1153,77 @@ def _run_turn(provider, coro):
     return asyncio.run(_run())
 
 
+def _run_turn_interruptible(provider, coro_factory, console) -> str:
+    """Run a turn in a background thread; the main thread listens for Enter.
+
+    coro_factory is a callable that takes a threading.Event and returns a
+    coroutine. Pressing Enter sets the event, which the agent_loop checks
+    at each iteration boundary for a clean stop.
+    """
+    stop_event = threading.Event()
+    result: list[str] = []
+    error: list[BaseException] = []
+
+    def _worker():
+        try:
+            result.append(asyncio.run(coro_factory(stop_event)))
+        except BaseException as e:
+            error.append(e)
+        finally:
+            try:
+                asyncio.run(provider.close_client())
+            except Exception:
+                pass
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+
+    # Main thread: poll stdin for Enter while the worker runs.
+    import platform
+
+    is_posix = platform.system() != "Windows"
+    while t.is_alive():
+        if is_posix:
+            try:
+                ready, _, _ = select.select([sys.stdin], [], [], 0.2)
+            except (OSError, ValueError):
+                t.join(0.2)
+                continue
+            if ready:
+                line = sys.stdin.readline()
+                if line.strip() == "" and line.endswith("\n"):
+                    stop_event.set()
+                    if console:
+                        console.print("\n[yellow]stopping…[/]")
+                    break
+                elif line == "":
+                    stop_event.set()
+                    break
+        else:
+            t.join(0.2)
+
+    t.join()
+
+    if error:
+        raise error[0]
+    return result[0] if result else "(stopped)"
+
+
+def _agent_loop_with_stop(task, cfg, provider, on_event=None, session_history=None, verbose=False):
+    """Factory: returns a callable(stop_event) -> coroutine for agent_loop."""
+
+    def _factory(stop_event: threading.Event):
+        return agent_loop(
+            task, cfg, provider,
+            on_event=on_event,
+            session_history=session_history,
+            verbose=verbose,
+            stop_event=stop_event,
+        )
+
+    return _factory
+
+
 # S8.9. doctor — smoke-test every known endpoint with one minimal task, so a dead
 # key or unreachable server is caught before a real task. Each probe is bounded.
 DOCTOR_TASK, DOCTOR_TIMEOUT = "what is the date today?", 20
@@ -1392,8 +1338,26 @@ def cmd_doctor(args, cfg: dict) -> None:
             console.print(f"[dim]  {ep['host']}: {res['error']}[/]")
 
 
+def _read_multiline(console) -> str:
+    """Read a task: paste freely; end with a line that is just '.'.
+
+    Single-line input still works: type a line, then '.' on the next line.
+    Multi-line paste works: each pasted line is captured; '.' submits.
+    """
+    buf: list[str] = []
+    while True:
+        try:
+            s = input("❯ " if not buf else "… ")
+        except (EOFError, KeyboardInterrupt):
+            break
+        if s.strip() == ".":
+            break
+        buf.append(s)
+    return "\n".join(buf).strip()
+
+
 def ui_chat(cfg: dict) -> None:
-    """Interactive REPL: each line is a fresh agent_loop task."""
+    """Interactive REPL: each task is a fresh agent_loop task."""
     from rich.console import Console
     from rich.markdown import Markdown
 
@@ -1415,7 +1379,7 @@ def ui_chat(cfg: dict) -> None:
             if seed and not readline.get_current_history_length():
                 [readline.add_history(s) for s in seed]  # seed once: prior tasks
             seed = None  # readline owns history from here on
-            line = input("❯ ").strip()
+            line = _read_multiline(console)
         except (EOFError, KeyboardInterrupt):
             break
         if not line:
@@ -1443,11 +1407,12 @@ def ui_chat(cfg: dict) -> None:
                 continue
         turn = TurnUI(console, provider, cfg)
         try:
-            answer = _run_turn(
+            answer = _run_turn_interruptible(
                 provider,
-                agent_loop(
+                _agent_loop_with_stop(
                     line, cfg, provider, on_event=turn.event, session_history=history, verbose=cfg.get("verbose")
                 ),
+                console,
             )
         except (KeyboardInterrupt, EOFError):
             turn.finish()
