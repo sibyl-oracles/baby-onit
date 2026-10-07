@@ -1,5 +1,5 @@
 """baby-onit — a tiny, single-file agent harness distilled from onit
-(https://github.com/sibyl-oracles/onit, ~60k-LOC). Keeps only the core loop;
+(https://github.com/sibyl-oracles/onit, ~60k-LOC). Keeps only the core loop.
 each section header (S1..S9) names the concept it teaches and the onit file it
 came from. Usage: baby-onit setup | chat | run "task"
 """

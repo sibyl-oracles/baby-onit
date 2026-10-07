@@ -1,0 +1,10 @@
+{
+  "bench": {
+    "pid": 48981,
+    "command": "python tmp/bench_cpu.py",
+    "cwd": "/Users/rowel/sandbox/baby-onit",
+    "started_at": "2026-09-30T15:53:30.556869",
+    "stdout_log": "/Users/rowel/sandbox/baby-onit/serve_logs/bench/stdout.log",
+    "stderr_log": "/Users/rowel/sandbox/baby-onit/serve_logs/bench/stderr.log"
+  }
+}
