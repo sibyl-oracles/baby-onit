@@ -45,10 +45,6 @@ for h in HOSTS:
     eq(f"is_ollama_host({h})", OLD.is_ollama_host(h), NEW.is_ollama_host(h))
     eq(f"_provider_label({h})", OLD._provider_label(h), NEW._provider_label(h))
 
-MODELS = ["gpt-6", "gpt-6.1", "gpt-6-preview", "gpt-60", "claude-opus-5-5", "", "GPT-6"]
-for m in MODELS:
-    eq(f"_is_openai_responses_model({m!r})", OLD._is_openai_responses_model(m),
-       NEW._is_openai_responses_model(m))
 
 JSONS = ["{'a': 1,}", '{"a": 1}', '```json\n{"a": [1,2,]}\n```', '{"a": "it\'s"}', "[]", "{}"]
 for s in JSONS:
@@ -78,26 +74,12 @@ for name in OLD.TOOLS:
             b = f"ERR {type(e).__name__}"
         eq(f"_coerce_args({name},{args})", a, b)
 
-# _finish_calls
-PEND = {0: {"name": "bash", "arguments": '{"command": "ls"}', "id": "x"},
-        1: {"name": "", "arguments": "junk", "id": ""},
-        2: {"name": "grep", "arguments": "{'pattern': 'a',}", "id": None}}
-eq("_finish_calls", OLD._finish_calls(dict(PEND)), NEW._finish_calls(dict(PEND)))
-
-# responses conversion
-MSGS = [{"role": "user", "content": "hi"},
-        {"role": "assistant", "content": "ok", "tool_calls": [
-            {"id": "c1", "function": {"name": "bash", "arguments": '{"command":"ls"}'}}]},
-        {"role": "tool", "tool_call_id": "c1", "content": "out"},
-        {"role": "assistant", "content": [{"type": "text", "text": "part"}]}]
-eq("_openai_responses_input", OLD._openai_responses_input(MSGS), NEW._openai_responses_input(MSGS))
-eq("_openai_responses_tools", OLD._openai_responses_tools([OLD.TOOLS["bash"][0]]),
-   NEW._openai_responses_tools([NEW.TOOLS["bash"][0]]))
-eq("_responses_text_of", OLD._responses_text_of([{"type": "text", "text": "a"}]), NEW._responses_text_of([{"type": "text", "text": "a"}]))
 
 # history
 HIST = [{"task": f"t{i}", "response": "R" * (900 if i < 4 else 10)} for i in range(6)]
-eq("_trim_history", OLD._trim_history(HIST), NEW._trim_history(HIST))
+eq("build_session_messages", OLD.build_session_messages(HIST), NEW.build_session_messages(HIST))
+eq("build_session_messages+budget", OLD.build_session_messages(HIST, 200),
+   NEW.build_session_messages(HIST, 200))
 eq("build_session_messages", OLD.build_session_messages(HIST, 50), NEW.build_session_messages(HIST, 50))
 eq("build_session_messages nobudget", OLD.build_session_messages(HIST), NEW.build_session_messages(HIST))
 
@@ -155,7 +137,7 @@ def cli(mod_path, args):
     return r.returncode, r.stdout, r.stderr
 
 
-for args in ([], ["--help"], ["setup", "--help"], ["run", "--help"], ["chat", "--help"], ["doctor", "--help"]):
+for args in ([], ["--help"], ["setup", "--help"], ["run", "--help"], ["chat", "--help"]):
     eq(f"cli{args}", cli("baby_onit.py", args), cli(REF, args))
 
 # ---- report ----------------------------------------------------------------

@@ -1021,27 +1021,20 @@ def append_session_history(cfg: dict, task: str, response: str) -> None:
     p.open("a", encoding="utf-8").write(json.dumps({"task": task, "response": response}) + "\n")
 
 
-def _trim_history(
-    history: list[dict], keep_full: int = HISTORY_KEEP_FULL, head_chars: int = HISTORY_DECAY_CHARS
-) -> list[dict]:
-    """Replayed history with older answers cut to their opening; questions stay whole."""
-    n, out = len(history), []
+def build_session_messages(history: list, budget_tokens: int | None = None) -> list:
+    """Replayed history as user/assistant pairs, oldest dropped until budget_tokens fits.
+
+    Older answers are cut to their opening (questions stay whole) before the
+    budget pass, so a long session degrades gracefully instead of overflowing.
+    """
+    n, msgs = len(history), []
     for i, rec in enumerate(history):
         r = rec.get("response", "")
-        if i < n - keep_full and len(r) > head_chars:
-            r = r[:head_chars] + "\n...[earlier answer trimmed]"
-        out.append({"task": rec.get("task", ""), "response": r})
-    return out
-
-
-def build_session_messages(history: list[dict], budget_tokens: int | None = None) -> list[dict]:
-    """Replayed history as user/assistant pairs, oldest dropped until budget_tokens fits."""
-    msgs = [
-        m
-        for rec in _trim_history(history)
-        for m in [{"role": "user", "content": rec["task"]}]
-        + ([{"role": "assistant", "content": rec["response"]}] if rec["response"] else [])
-    ]
+        if i < n - HISTORY_KEEP_FULL and len(r) > HISTORY_DECAY_CHARS:
+            r = r[:HISTORY_DECAY_CHARS] + "\n...[earlier answer trimmed]"
+        msgs.append({"role": "user", "content": rec.get("task", "")})
+        if r:
+            msgs.append({"role": "assistant", "content": r})
     if budget_tokens and budget_tokens > 0:
         total = sum(_est_tokens(m.get("content", "") or "") for m in msgs)
         while total > budget_tokens and len(msgs) > 2:
@@ -1143,120 +1136,6 @@ def _run_turn(provider, coro):
         return out
 
     return asyncio.run(_run())
-
-
-# S8.9. doctor — smoke-test every known endpoint with one minimal task, so a dead
-# key or unreachable server is caught before a real task. Each probe is bounded.
-DOCTOR_TASK, DOCTOR_TIMEOUT = "what is the date today?", 20
-
-
-async def _doctor_probe(provider: Provider, cfg: dict) -> dict:
-    """One minimal chat (no tools) against one endpoint; report, never raise."""
-    res = {
-        "host": provider.host,
-        "model": provider.model or "",
-        "ok": False,
-        "answer": "",
-        "error": "",
-        "model_s": 0.0,
-        "prompt_tokens": 0,
-    }
-    t0 = time.monotonic()
-    try:
-        if not provider.model:
-            # cache under the timeout; no SystemExit in wait_for's task
-            await asyncio.wait_for(provider.list_models(), DOCTOR_TIMEOUT)
-            provider.model = await provider.autodetect_model()
-        res["model"] = provider.model
-        msg, usage = await asyncio.wait_for(
-            provider.chat(
-                [{"role": "system", "content": build_system_prompt(cfg)}, {"role": "user", "content": DOCTOR_TASK}],
-                tools=None,
-            ),
-            DOCTOR_TIMEOUT,
-        )
-        res.update(ok=True, answer=(msg.get("content") or "").strip(), prompt_tokens=usage.get("prompt_tokens", 0))
-    except Exception as e:  # noqa: BLE001 — a dead endpoint must not sink the doctor run
-        res["error"] = (
-            f"timed out after {DOCTOR_TIMEOUT}s"
-            if isinstance(e, asyncio.TimeoutError)
-            else f"{type(e).__name__}: {e}"[:200]
-        )
-    res["model_s"] = round(time.monotonic() - t0, 1)
-    return res
-
-
-def cmd_doctor(args, cfg: dict) -> None:
-    """Probe every known endpoint with DOCTOR_TASK; print a pass/fail table."""
-    from rich.console import Console
-    from rich.table import Table
-
-    console = Console()
-    endpoints = known_endpoints()
-    if not endpoints:
-        console.print("[yellow]no known endpoints — run: baby-onit setup[/]")
-        return
-
-    async def probe_all() -> list[dict]:
-        # as_completed, not gather: print each row the moment it lands, so a
-        # slow endpoint shows progress instead of a silent, frozen terminal.
-        tasks = [
-            asyncio.create_task(
-                _doctor_probe(
-                    Provider({**cfg, "serving": {**cfg["serving"], "host": ep["host"], "model": ep["model"]}}), cfg
-                )
-            )
-            for ep in endpoints
-        ]
-        by_host = {}
-        for fut in asyncio.as_completed(tasks):
-            res = await fut
-            by_host[res["host"]] = res
-            console.print(f"[dim]  {res['host']}: {'ok' if res['ok'] else res['error'][:60]}[/]")
-        return [by_host[ep["host"]] for ep in endpoints]
-
-    results = asyncio.run(probe_all())
-    tbl = Table(title=f"doctor — {DOCTOR_TASK!r} against every known endpoint")
-    for col, width in (
-        ("endpoint", 34),
-        ("key", 10),
-        ("model", 26),
-        ("status", 8),
-        ("reply", 30),
-        ("s", 6),
-        ("tokens", 8),
-    ):
-        tbl.add_column(col, max_width=width)
-    for ep, res in zip(endpoints, results):
-        err = res["error"].lower()
-        status = (
-            "[green]ok[/]"
-            if res["ok"]
-            else (
-                "[red]no key[/]"
-                if any(k in err for k in ("401", "403", "auth"))
-                else (
-                    "[red]offline[/]"
-                    if any(k in err for k in ("connect", "unreachable", "timed out"))
-                    else "[red]error[/]"
-                )
-            )
-        )
-        tbl.add_row(
-            ep["host"],
-            "••••" + ep["key"][-4:] if ep["key"] else "[dim]none[/]",
-            res["model"],
-            status,
-            (res["answer"] if res["ok"] else res["error"])[:40],
-            str(res["model_s"]),
-            str(res["prompt_tokens"]),
-        )
-    console.print(tbl)
-    n_ok = sum(r["ok"] for r in results)
-    console.print(f"[{'green' if n_ok == len(results) else 'yellow'}]{n_ok}/{len(results)} endpoints ok[/]")
-    for ep, res in zip(endpoints, results):
-        if not res["ok"]:
-            console.print(f"[dim]  {ep['host']}: {res['error']}[/]")
 
 
 _EXIT_CMDS = {"\\quit", "\\q", "\\bye", "\\b", "exit"}
@@ -1539,7 +1418,6 @@ def main(argv: list[str] | None = None) -> None:
     for p in (
         sub.add_parser("chat", help="interactive chat"),
         p_run,
-        sub.add_parser("doctor", help="smoke-test every known endpoint with a minimal task"),
     ):
         p.add_argument(
             "--max-context-tokens",
@@ -1565,8 +1443,6 @@ def main(argv: list[str] | None = None) -> None:
         cmd_setup(args)
     elif args.cmd == "chat":
         ui_chat(cfg)
-    elif args.cmd == "doctor":
-        cmd_doctor(args, cfg)
     elif args.cmd == "run":
         provider = Provider(cfg)
         if not provider.model:
