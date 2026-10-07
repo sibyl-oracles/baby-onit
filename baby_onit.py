@@ -15,10 +15,8 @@ import json
 import math
 import os
 import re
-import select
 import subprocess
 import sys
-import threading
 import time
 from collections import Counter
 from collections.abc import Callable
@@ -414,7 +412,7 @@ Working directory: {data_path} (today: {today}). Every file path you write \
 starts here.
 
 Tool routing:
-- Files in the working directory: read_file, grep, search_document.
+- Files in the working directory: read_file, grep, local_search.
 - Public facts, news, current events: web search; fetch pages for details.
 - Anything that can change (prices, versions, dates) needs a tool result, \
 never memory. Prefer the primary source over anyone summarizing it.
@@ -699,21 +697,6 @@ def tool_local_search(query: str, top_k: int = 5) -> str:
     )
 
 
-def tool_search_document(path: str, query: str = "", pattern: str = "", context_lines: int = 3) -> str:
-    """Regex or question search inside one file. Distilled from onit's search_document…"""
-    text = _resolve(path).read_text(errors="replace")
-    if pattern:
-        rx, lines = re.compile(pattern), text.splitlines()
-        hits = [
-            f"L{i+1}: " + "\n".join(lines[max(0, i - context_lines) : i + context_lines + 1])
-            for i, line in enumerate(lines)
-            if rx.search(line)
-        ]
-        return "\n---\n".join(hits[:20]) or "(no matches)"
-    rec = _chunks(text)
-    return "\n---\n".join(rec[i] for s, i in _bm25(rec, query)[:3] if s > 0) or "(no relevant section)"
-
-
 def tool_grep(pattern: str, path: str = ".", file_pattern: str = "*") -> str:
     """Recursive regex search across DATA_PATH, bounded on matches/bytes/line-len."""
     rx, out, total = re.compile(pattern), [], 0
@@ -778,11 +761,10 @@ for _name, _desc, _fn in [
     ("read_file", "Read a file's text (PDFs supported).", tool_read_file),
     ("edit_file", "Replace an exact old_string with new_string.", tool_edit_file),
     ("local_search", "BM25 search over files in the working directory.", tool_local_search),
-    ("search_document", "Regex (pattern=) or question (query=) search in one file.", tool_search_document),
     ("grep", "Recursive regex search across files.", tool_grep),
 ]:
     tool(_name, _desc, _fn)
-READ_ONLY = {"web_search", "fetch_content", "read_file", "local_search", "search_document", "grep"}
+READ_ONLY = {"web_search", "fetch_content", "read_file", "local_search", "grep"}
 _call_history: list[tuple[str, str]] = []
 
 
@@ -857,13 +839,8 @@ async def agent_loop(
     max_iter: int | None = None,
     session_history: list[dict] | None = None,
     verbose: bool = False,
-    stop_event: "threading.Event | None" = None,
 ) -> str:
-    """Run the task to completion; return the final assistant text.
-
-    If stop_event is set (by the UI thread when the user presses Enter),
-    the loop exits cleanly at the next iteration boundary.
-    """
+    """Run the task to completion; return the final assistant text."""
     global DATA_PATH
     DATA_PATH = cfg["data_path"]
     max_iter = max_iter if max_iter is not None else cfg["serving"]["max_chat_iterations"]
@@ -875,9 +852,6 @@ async def agent_loop(
     iteration, answer = 1, ""
     say = on_event or (lambda kind, text: None)
     while True:
-        if stop_event is not None and stop_event.is_set():
-            say("status", "stopped by user (Enter)")
-            break
         if max_iter > 0 and iteration > max_iter:
             say("turn", f"iteration cap reached ({max_iter})")
             break
@@ -1169,77 +1143,6 @@ def _run_turn(provider, coro):
     return asyncio.run(_run())
 
 
-def _run_turn_interruptible(provider, coro_factory, console) -> str:
-    """Run a turn in a background thread; the main thread listens for Enter.
-
-    coro_factory is a callable that takes a threading.Event and returns a
-    coroutine. Pressing Enter sets the event, which the agent_loop checks
-    at each iteration boundary for a clean stop.
-    """
-    stop_event = threading.Event()
-    result: list[str] = []
-    error: list[BaseException] = []
-
-    def _worker():
-        try:
-            result.append(asyncio.run(coro_factory(stop_event)))
-        except BaseException as e:
-            error.append(e)
-        finally:
-            try:
-                asyncio.run(provider.close_client())
-            except Exception:
-                pass
-
-    t = threading.Thread(target=_worker, daemon=True)
-    t.start()
-
-    # Main thread: poll stdin for Enter while the worker runs.
-    import platform
-
-    is_posix = platform.system() != "Windows"
-    while t.is_alive():
-        if is_posix:
-            try:
-                ready, _, _ = select.select([sys.stdin], [], [], 0.2)
-            except (OSError, ValueError):
-                t.join(0.2)
-                continue
-            if ready:
-                line = sys.stdin.readline()
-                if line.strip() == "" and line.endswith("\n"):
-                    stop_event.set()
-                    if console:
-                        console.print("\n[yellow]stopping…[/]")
-                    break
-                elif line == "":
-                    stop_event.set()
-                    break
-        else:
-            t.join(0.2)
-
-    t.join()
-
-    if error:
-        raise error[0]
-    return result[0] if result else "(stopped)"
-
-
-def _agent_loop_with_stop(task, cfg, provider, on_event=None, session_history=None, verbose=False):
-    """Factory: returns a callable(stop_event) -> coroutine for agent_loop."""
-
-    def _factory(stop_event: threading.Event):
-        return agent_loop(
-            task, cfg, provider,
-            on_event=on_event,
-            session_history=session_history,
-            verbose=verbose,
-            stop_event=stop_event,
-        )
-
-    return _factory
-
-
 # S8.9. doctor — smoke-test every known endpoint with one minimal task, so a dead
 # key or unreachable server is caught before a real task. Each probe is bounded.
 DOCTOR_TASK, DOCTOR_TIMEOUT = "what is the date today?", 20
@@ -1423,12 +1326,9 @@ def ui_chat(cfg: dict) -> None:
                 continue
         turn = TurnUI(console, provider, cfg)
         try:
-            answer = _run_turn_interruptible(
+            answer = _run_turn(
                 provider,
-                _agent_loop_with_stop(
-                    line, cfg, provider, on_event=turn.event, session_history=history, verbose=cfg.get("verbose")
-                ),
-                console,
+                agent_loop(line, cfg, provider, on_event=turn.event, session_history=history, verbose=cfg.get("verbose")),
             )
         except (KeyboardInterrupt, EOFError):
             turn.finish()

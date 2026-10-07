@@ -133,8 +133,6 @@ async def tools(mod):
     out["escape"] = await mod.dispatch("read_file", {"path": "../../etc/passwd"})
     out["doc"] = await mod.dispatch("write_file", {"path": "d.md", "content": "# D\n\nBM25 ranking text.\n"})
     out["search"] = await mod.dispatch("local_search", {"query": "BM25 ranking"})
-    out["search_doc"] = await mod.dispatch("search_document", {"path": "d.md", "query": "ranking"})
-    out["search_pat"] = await mod.dispatch("search_document", {"path": "d.md", "pattern": "BM25"})
     mod._call_history.clear()
     for _ in range(5):
         out["repeat"] = await mod.dispatch("bash", {"command": "echo hi"})
