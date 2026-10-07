@@ -1363,7 +1363,7 @@ def _read_multiline(console) -> str:
     buf: list[str] = []
     while True:
         try:
-            s = input("❯ " if not buf else "… ")
+            s = input("❯ " if not buf else "")
         except (EOFError, KeyboardInterrupt):
             break
         if s.strip() == ".":
