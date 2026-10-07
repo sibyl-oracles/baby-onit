@@ -889,6 +889,8 @@ async def agent_loop(
         t0 = time.monotonic()
         first_t: list[float] = []
 
+        say("status", "thinking\u2026")  # live cue: the model call can take a while
+
         msg, usage = await provider.chat(
             messages,
             [schema for schema, _ in TOOLS.values()],
@@ -1261,14 +1263,12 @@ _EXIT_CMDS = {"\\quit", "\\q", "\\bye", "\\b", "exit"}
 
 
 def _read_multiline(console) -> str:
-    """Read a task: paste freely; end with a line that is just '.'.
+    """Read a task. Enter submits; a trailing backslash continues to the next line.
 
-    Single-line input still works: type a line, then '.' on the next line.
-    Multi-line paste works: each pasted line is captured; '.' submits.
-    Exit commands (\\quit, \\bye, …) are recognised immediately, even on the
-    first line, so they are not swallowed into the buffer.
+    A lone '.' also submits (legacy multi-line habit). Exit commands
+    (\\quit, \\bye, …) are recognised immediately, before any buffering.
     """
-    buf: list[str] = []
+    buf: list = []
     while True:
         try:
             s = input("❯ " if not buf else "")
@@ -1278,7 +1278,11 @@ def _read_multiline(console) -> str:
             return s.strip()
         if s.strip() == ".":
             break
+        if s.endswith("\\"):  # explicit continuation: drop the marker, keep reading
+            buf.append(s[:-1])
+            continue
         buf.append(s)
+        break  # Enter submits
     return "\n".join(buf).strip()
 
 
@@ -1310,7 +1314,7 @@ def ui_chat(cfg: dict) -> None:
             break
         if not line:
             continue
-        if line in ("\\quit", "\\q", "\\bye", "\\b", "exit"):
+        if line in _EXIT_CMDS:
             break
         if line.startswith("\\"):
             if line == "\\help":

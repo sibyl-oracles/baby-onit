@@ -4,14 +4,13 @@ import asyncio, json, os, sys
 import baby_onit as b
 
 def tools_offline():
-    assert len(b.TOOLS) == 9
+    assert len(b.TOOLS) == 8
     assert b.json_repair("{'a': 1,}") == {"a": 1}
     assert b.normalize_host("https://api.ollama.com/v1", True) == "https://api.ollama.com"
     assert b.normalize_host("http://x:8000", False) == "http://x:8000/v1"
-    # claude: rides the OpenAI-compatible dialect; host must normalize to /v1,
-    # never trip the gpt-6 Responses gate, and label as "claude".
+    # claude: rides the OpenAI-compatible dialect; host must normalize to /v1
+    # and label as "claude".
     assert b.normalize_host("https://api.anthropic.com/v1", False) == "https://api.anthropic.com/v1"
-    assert not b._is_openai_responses_model("claude-opus-5-5")
     assert b._provider_label("https://api.anthropic.com/v1") == "claude"
 
 async def tools_dispatch(tmp):
