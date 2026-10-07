@@ -37,7 +37,7 @@ DEFAULTS = {
         "max_tokens": 32768,
         "max_chat_iterations": -1,  # -1 = no turn cap (onit's default)
         "max_context_tokens": 262144,  # compaction trigger threshold
-        "history_budget_tokens": 16000,  # hard cap on replayed history (pre-call trim)
+        "history_budget_tokens": 8000,  # hard cap on replayed history (pre-call trim)
         "temperature": 0.6,
         "top_p": 0.95,
     },
@@ -284,6 +284,22 @@ class Provider:
                     ) from e
                 await asyncio.sleep(1.5 * (attempt + 1))
 
+    async def _stream_ollama(self, kwargs: dict) -> list:
+        """Ollama stream with the same empty-body retry as _stream_with_retry."""
+        for attempt in range(3):
+            try:
+                return [c async for c in await self.client.chat(**kwargs)]
+            except Exception as e:
+                if "empty response" not in str(e).lower():
+                    raise
+                if attempt == 2:
+                    raise RuntimeError(
+                        f"provider returned an empty response 3x in a row (model={self.model}, "
+                        f"host={self.host}) — usually a provider-side flake on a large payload; "
+                        f"lower serving.history_budget_tokens or set serving.model to another model"
+                    ) from e
+                await asyncio.sleep(1.5 * (attempt + 1))
+
     async def chat(
         self, messages: list[dict], tools: list[dict] | None = None, stream_cb: Callable[[str], None] | None = None
     ) -> tuple[dict, dict]:
@@ -300,7 +316,7 @@ class Provider:
             }
             if tools:
                 kwargs["tools"] = tools
-            chunks = [c async for c in await self.client.chat(**kwargs)]
+            chunks = await self._stream_ollama(kwargs)
             content = "".join(c.message.content or "" for c in chunks)
             thinking = "".join(getattr(c.message, "thinking", "") or "" for c in chunks)
             if stream_cb:
