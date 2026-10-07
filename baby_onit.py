@@ -1257,11 +1257,16 @@ def cmd_doctor(args, cfg: dict) -> None:
             console.print(f"[dim]  {ep['host']}: {res['error']}[/]")
 
 
+_EXIT_CMDS = {"\\quit", "\\q", "\\bye", "\\b", "exit"}
+
+
 def _read_multiline(console) -> str:
     """Read a task: paste freely; end with a line that is just '.'.
 
     Single-line input still works: type a line, then '.' on the next line.
     Multi-line paste works: each pasted line is captured; '.' submits.
+    Exit commands (\\quit, \\bye, …) are recognised immediately, even on the
+    first line, so they are not swallowed into the buffer.
     """
     buf: list[str] = []
     while True:
@@ -1269,6 +1274,8 @@ def _read_multiline(console) -> str:
             s = input("❯ " if not buf else "")
         except (EOFError, KeyboardInterrupt):
             break
+        if not buf and s.strip() in _EXIT_CMDS:
+            return s.strip()
         if s.strip() == ".":
             break
         buf.append(s)
