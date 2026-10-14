@@ -1404,6 +1404,7 @@ def main(argv: list[str] | None = None) -> None:
                 ),
             },
         ),
+        ("--max-tokens", {"type": int, "help": "max output tokens per response (default: 32768)"}),
     ]:
         ap.add_argument(flag, **kw)
     sub = ap.add_subparsers(dest="cmd")
@@ -1425,6 +1426,12 @@ def main(argv: list[str] | None = None) -> None:
             default=argparse.SUPPRESS,
             help="compaction trigger in tokens (default: 262144)",
         )
+        p.add_argument(
+            "--max-tokens",
+            type=int,
+            default=argparse.SUPPRESS,
+            help="max output tokens per response (default: 32768)",
+        )
     args = ap.parse_args(argv)
     cfg = load_config(args.config)
     for k, v in (
@@ -1434,6 +1441,7 @@ def main(argv: list[str] | None = None) -> None:
         ("max_chat_iterations", args.max_iterations),
         ("max_context_tokens", getattr(args, "max_context_tokens", None)),
         ("history_budget_tokens", getattr(args, "history_budget_tokens", None)),
+        ("max_tokens", getattr(args, "max_tokens", None)),
     ):
         if v is not None:
             cfg["serving"][k] = v

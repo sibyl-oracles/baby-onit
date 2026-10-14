@@ -95,6 +95,7 @@ untouched (defaults below are the built-in values when the config is silent):
 | `--max-iterations` | cap the agent loop | `-1` (no cap) |
 | `--max-context-tokens` | compaction trigger (tokens) | `262144` |
 | `--history-budget-tokens` | cap on replayed session history (tokens) | `16000` |
+| `--max-tokens` | max output tokens per response | `32768` |
 | `--config` | alternate config file | `~/.baby-onit/config.yaml` |
 
 Long sessions are replayed into every request. Some providers (notably
