@@ -769,12 +769,26 @@ _call_history: list[tuple[str, str]] = []
 
 
 def json_repair(s: str) -> Any:
-    """Models emit near-JSON: single quotes, trailing commas. Fix and parse."""
+    """Models emit near-JSON: single quotes, trailing commas. Fix and parse.
+
+    Also strips the nanochat streaming parser's <|python_start|>/<|python_end|>
+    markers, which can ride along on tool-call arguments (measured 2026-11-02
+    on the v6m gate server: arguments arrive as '{"p":"v"}<|python_end|>').
+    """
     s = re.sub(r"^```[a-z]*\n|\n```$", "", s.strip())  # strip a code fence
+    s = s.replace("<|python_start|>", "").replace("<|python_end|>", "").strip()
     try:
         return json.loads(s)
     except json.JSONDecodeError:
         pass
+    if s.startswith("{"):
+        last = s.rfind("}")
+        if last != -1:
+            trimmed = s[:last + 1]
+            try:
+                return json.loads(trimmed)
+            except json.JSONDecodeError:
+                s = trimmed
     return json.loads(re.sub(r"(?<!\\)'", '"', re.sub(r",\s*([}\]])", r"\1", s)))
 
 
