@@ -26,7 +26,8 @@ async def tools_dispatch(tmp):
     b._call_history.clear()
     for _ in range(5):
         r = await b.dispatch("bash", {"command": "echo hi"})
-    assert "repeated 5 times" in r
+    d = json.loads(r)
+    assert d["error"] == "E_LOOP" and d["repeats"] == 5, r
 
 async def live(host, model, tmp, key_env):
     if not os.environ.get(key_env):

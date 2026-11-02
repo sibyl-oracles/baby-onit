@@ -800,24 +800,36 @@ def _coerce_args(name: str, args: dict) -> dict:
     return out
 
 
+def _tool_error(code: str, **fields) -> str:
+    """Machine-readable tool error: one JSON line the model can parse and act on.
+    Replaces the old prose 'ERROR: ...' strings -- utak trained on structured
+    feedback recovers in one retry; prose errors read as tool output and it
+    re-calls the same broken form."""
+    import json as _json
+    return _json.dumps({"error": code, **fields}, ensure_ascii=False)
+
+
 async def dispatch(name: str, args: dict) -> str:
     """Run one tool call with timeout + repeated-call guard. Returns a str."""
     if name not in TOOLS:
-        return f"ERROR: unknown tool '{name}'. Available: {', '.join(TOOLS)}"
+        return _tool_error("E_UNKNOWN_TOOL", tool=name, accepts=sorted(TOOLS))
     try:
         args = args if isinstance(args, dict) else json_repair(str(args))
     except Exception:  # noqa: BLE001 — model may emit truncated JSON; the error is the reply
-        return f"ERROR: could not parse arguments (truncated tool call?): {args!r}"
+        return _tool_error("E_PARSE", tool=name, raw=str(args)[:200])
     key = (name, json.dumps(args := _coerce_args(name, args), sort_keys=True))
     _call_history.append(key)
     if _call_history.count(key) >= 5:
-        return "ERROR: same tool call repeated 5 times — change approach or answer."
+        return _tool_error("E_LOOP", tool=name, repeats=5,
+                           hint="same call 5x — change approach or answer without tools")
     try:
         return str(await asyncio.wait_for(asyncio.to_thread(TOOLS[name][1], **args), timeout=330))
     except TypeError as e:
-        return f"ERROR: bad arguments for {name}: {e}"
+        import inspect as _inspect
+        sig = list(_inspect.signature(TOOLS[name][1]).parameters)
+        return _tool_error("E_ARGS", tool=name, bad=str(e)[:160], accepts=sig)
     except Exception as e:  # noqa: BLE001 — tool errors are surfaced to the model as text
-        return f"ERROR: {type(e).__name__}: {e}"
+        return _tool_error("E_TOOL", tool=name, err=f"{type(e).__name__}: {str(e)[:160]}")
 
 
 def _make_first_token_cb(sink: list) -> Callable:
@@ -849,7 +861,7 @@ async def agent_loop(
     messages += build_session_messages(session_history or [], cfg["serving"]["history_budget_tokens"])
     messages.append({"role": "user", "content": task})
     _call_history.clear()
-    iteration, answer = 1, ""
+    iteration, answer, consecutive_errors = 1, "", 0
     say = on_event or (lambda kind, text: None)
     while True:
         if max_iter > 0 and iteration > max_iter:
@@ -881,9 +893,17 @@ async def agent_loop(
                 ]
             )
             say("status", f"compacted in {time.monotonic() - ct0:.1f}s")
+            tool_names = ", ".join(sorted(TOOLS)) or "none"
             messages = [
                 messages[0],
-                {"role": "user", "content": f"[compacted]\n{summary['content']}\n\nContinue the task."},
+                {
+                    "role": "user",
+                    "content": (
+                        f"[compacted]\n{summary['content']}\n\nContinue the task. "
+                        f"Tools available: {tool_names}. Call one if you still need it; "
+                        f"answer in prose when you are done."
+                    ),
+                },
             ]
         messages = _fit_messages(messages, limit)
         t0 = time.monotonic()
@@ -931,6 +951,22 @@ async def agent_loop(
 
         results = list(await asyncio.gather(*(run_one(c) for c in calls if c["name"] in READ_ONLY)))
         results += [await run_one(c) for c in calls if c["name"] not in READ_ONLY]  # writes: serial, in order
+        # T1.2: an iteration whose tool results were ALL machine errors is a
+        # free retry (bounded at 3 consecutive) so one bad call does not burn
+        # the loop budget; after 3, counting resumes and max_iter terminates.
+        def _is_err(r):
+            try:
+                d = json.loads(r[1])
+                return isinstance(d, dict) and "error" in d
+            except Exception:
+                return False
+        if results and all(_is_err(r) for r in results):
+            consecutive_errors += 1
+            if consecutive_errors < 3:
+                say("status", f"tool errors ({consecutive_errors}/3 free retries)")
+                continue
+        else:
+            consecutive_errors = 0
         iteration += 1
         for c, result in results:
             # tool result for either family (ollama: tool_name; OpenAI: tool_call_id)
