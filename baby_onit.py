@@ -857,6 +857,23 @@ def _make_first_token_cb(sink: list) -> Callable:
 
 
 # S7. Agent loop — a while-loop with four moves: send messages, run tools, append results, stop.
+# P5 over-call guard: a plain Q&A task ("what is 2+2?") must not see a tool
+# surface on the first model call -- utak over-triggers on bare questions when
+# tools are present (measured: CF1/CF2 0/3 with tools vs 3/3 without).
+_TASK_TOOL_HINTS = (
+    "file", "files", "directory", "read", "write", "edit", "append", "grep",
+    "search", "fetch", "url", "http", "web", "news", "latest", "current",
+    "today", "price", "version", "release", "repo", "git", "commit", "push",
+    "list", "find", "run", "command", "script", "log", "json", "csv", "yaml",
+)
+
+
+def _task_needs_tools(task: str) -> bool:
+    """True when the task text plausibly requires a tool (keyword gate)."""
+    t = (task or "").lower()
+    return any(h in t for h in _TASK_TOOL_HINTS)
+
+
 async def agent_loop(
     task: str,
     cfg: dict,
@@ -925,9 +942,14 @@ async def agent_loop(
 
         say("status", "thinking\u2026")  # live cue: the model call can take a while
 
+        # P5: on the first model call, hide the tool surface from tasks that
+        # cannot need one; later iterations always see tools (mid-episode).
+        call_tools = [schema for schema, _ in TOOLS.values()]
+        if iteration == 1 and not _task_needs_tools(task):
+            call_tools = None
         msg, usage = await provider.chat(
             messages,
-            [schema for schema, _ in TOOLS.values()],
+            call_tools,
             stream_cb=_make_first_token_cb(first_t),
         )
         model_s = time.monotonic() - t0
