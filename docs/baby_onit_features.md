@@ -151,7 +151,7 @@ tells the model *how to behave*, and it does four jobs:
 2. **Working directory** — every file path the model writes starts at
    `data_path`. This is the jail, stated in words.
 3. **Tool routing** — a short decision table: files in the working directory go to
-   `read_file` / `grep` / `search_document`; public facts and news go to web
+   `read_file` / `grep`; public facts and news go to web
    search; anything that can change (prices, versions, dates) needs a tool result,
    never memory; prefer the primary source.
 4. **Credentials, pre-wired** — the harness authenticates git via `GIT_ASKPASS` and
@@ -184,7 +184,6 @@ The harness ships eight:
 | `read_file` | read a file (text/tables/images) | jail path check |
 | `edit_file` | exact string replace in a file | jail path check |
 | `local_search` | BM25 search over local docs | — |
-| `search_document` | search within one document | jail path check |
 | `grep` | regex search across files | jail path check; match/byte/line caps |
 
 Three design details are worth studying.

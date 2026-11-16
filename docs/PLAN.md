@@ -88,10 +88,9 @@ MCP exists (process isolation, multi-client reuse) as a teaching note.
 | `read_file` | same | text with `max_chars`, PDF text, binary → metadata only |
 | `edit_file` | same | exact `old_string` → `new_string`, `replace_all`, must-match check |
 | `local_search` | `local/search/toolkit.py` | parse (md/txt/csv/pdf/docx) → chunk (size/overlap) → BM25 (k1=1.5, b=0.75) → optional dense embeddings → RRF hybrid; JSON index with unchanged-file skip; **document openings** returned with results |
-| `search_document` | `local/search/toolkit.py` | regex (`pattern=`) or question (`query=`) search inside one file |
 | `grep` | — | recursive regex search across files, with `file_pattern` filter |
 
-Nine tools total (the six-tool core plus `search_document` and `grep`).
+Eight tools total (the six-tool core plus `local_search` and `grep`).
 
 `data_path` jail: every path argument is resolved with `realpath` and must stay
 inside the working directory — the single most important safety idea in onit,
